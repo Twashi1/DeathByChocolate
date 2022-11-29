@@ -5,9 +5,12 @@
 #include <string>
 #include <sstream>
 #include <chrono>
+#include <format>
 
 #define __DEBUG
 #define __ENABLE_TRANSPOSITIONS
+static bool PRINTING_ALL = true;
+#define Log(msg, ...) if (PRINTING_ALL) std::cout << std::format(msg, __VA_ARGS__) << std::endl
 
 // TODO: alpha/beta pruning
 
@@ -53,7 +56,7 @@ struct ChocolateBar {
 		if (rows <= 1 && columns <= 1) {
 			// Check that the only square left is the poison square
 			if (!(poison_row == 0 && poison_column == 0)) {
-				std::cout << "Poison square was not left!" << std::endl;
+				Log("Poison square was not left!");
 			}
 
 			return true;
@@ -130,7 +133,7 @@ struct ChocolateBar {
 			std::cout << std::endl;
 		}
 
-		std::cout << "<-- END -->" << std::endl;
+		std::cout << std::endl;
 	}
 
 	bool CheckValidMove(const Move& move) {
@@ -188,9 +191,13 @@ struct TranspositionTable {
 		return position_hash % table_size;
 	}
 
+	void Reset() {
+		std::fill_n(data, table_size, Entry());
+	}
+
 	Entry& AddEntry(hash_t position_hash, float score) {
 		if (current_size == table_size) {
-			std::cout << "[WARN] Table completely filled! Ignoring call" << std::endl;
+			Log("[WARN] Table completely filled! Ignoring call");
 			
 			return data[0];
 		}
@@ -214,7 +221,7 @@ struct TranspositionTable {
 		}
 
 		if (attempts >= MAX_ATTEMPTS) {
-			std::cout << "Failed lookup from too many attempts" << std::endl;
+			Log("Failed lookup from too many attempts");
 		}
 
 		// Found an empty entry, so set the position hash and score
@@ -230,7 +237,7 @@ struct TranspositionTable {
 
 	Entry Lookup(hash_t position_hash) {
 		if (current_size == table_size) {
-			std::cout << "[WARN] Table completely filled! Ignoring call" << std::endl;
+			Log("[WARN] Table completely filled! Ignoring call");
 
 			return Entry();
 		}
@@ -281,7 +288,7 @@ float Evaluate(ChocolateBar bar, int& positions_searched, TranspositionTable& ta
 		return 1;
 	}
 	else {
-		float total_score = 0;
+		float max_score = FLT_MAX;
 		float move_count = moves.size();
 
 		// Iterate possible moves
@@ -299,7 +306,7 @@ float Evaluate(ChocolateBar bar, int& positions_searched, TranspositionTable& ta
 			// Means this position has been looked up before
 			if (!entry.isInvalid()) {
 				// So add score for that position to our total
-				total_score += entry.score;
+				max_score = std::min(max_score, entry.score);
 			}
 			// Otherwise evaluate state as normal, and add state to table
 			else {
@@ -309,8 +316,7 @@ float Evaluate(ChocolateBar bar, int& positions_searched, TranspositionTable& ta
 				// Add to lookup table
 				table.AddEntry(position_hash, position_score);
 
-				// Add score to total
-				total_score += position_score;
+				max_score = std::min(max_score, position_score);
 			}
 
 #else
@@ -323,14 +329,14 @@ float Evaluate(ChocolateBar bar, int& positions_searched, TranspositionTable& ta
 		}
 
 		// Calculate average score
-		float average = total_score / move_count;
+		// float average = total_score / move_count;
 
 		// Return average score
-		return average;
+		return max_score;
 	}
 }
 
-Move GetAIMove(ChocolateBar bar, TranspositionTable& table) {
+Move GetAIMove(ChocolateBar bar, TranspositionTable& table, float* move_score = nullptr) {
 	std::vector<Move> possible_moves = bar.GetValidMoves();
 
 	int total_searched = 0;
@@ -339,6 +345,10 @@ Move GetAIMove(ChocolateBar bar, TranspositionTable& table) {
 
 	float best_move_score = -FLT_MAX;
 	Move* best_move = nullptr;
+
+	if (move_score != nullptr) {
+		*move_score = -1.0f;
+	}
 
 	for (Move& move : possible_moves) {
 		ChocolateBar test_bar = bar;
@@ -350,18 +360,29 @@ Move GetAIMove(ChocolateBar bar, TranspositionTable& table) {
 		if (score > best_move_score) {
 			best_move_score = score;
 			best_move = &move;
+
+			if (move_score != nullptr) { *move_score = best_move_score; }
+		}
+
+		// This move will lead to a guaranteed win, so don't process any more
+		if (score == 1.0f) {
+			Log("Found guaranteed win");
+
+			break;
 		}
 	}
 
 	if (best_move == nullptr) {
-		std::cout << "ERROR! No AI move found!" << std::endl;
+		Log("ERROR! No AI move found!");
+
+		return Move(Move::VERTICAL, 0);
 	}
 	else {
 		std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 
 		float elapsed_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
 
-		std::cout << "Searched " << total_searched << " positions in " << elapsed_time / 1000.0f << "ms" << std::endl;
+		Log("Searched {} positions in {}ms", total_searched, elapsed_time / 1000.0f);
 
 		return *best_move;
 	}
@@ -401,36 +422,200 @@ Move GetPlayerMove(ChocolateBar bar) {
 	return pending_move;
 }
 
-int main(void) {
-	ChocolateBar bar(6, 6, 0, 2);
-	// 100k entries
+enum MOVE_ORDER {
+	AI_MOVE_FIRST,
+	AI_MOVE_SECOND
+};
+
+MOVE_ORDER PlayerSelectMoveOrder() {
+	std::cout << "Would you like to move first or second? (1/2): ";
+	int order;
+	std::cin >> order;
+
+	if (order == 1) {
+		return AI_MOVE_SECOND;
+	}
+	else {
+		return AI_MOVE_FIRST;
+	}
+}
+
+// AI will calculate whether it should move first or second
+MOVE_ORDER GetAIMoveOrder(ChocolateBar bar, TranspositionTable& table) {
+	// NOTE: don't think we can reuse transposition table for this, maybe if you invert the values?
+	TranspositionTable first_table(table.table_size);
+	TranspositionTable second_table(table.table_size);
+	
+	/* -- CALCULATING SCORE WHEN MOVING FIRST -- */
+	float first_score = 0.0f;
+	GetAIMove(bar, first_table, &first_score);
+
+	float second_score = first_score * -1.0f;
+
+	Log("First score: {}, Second score: {}", first_score, second_score);
+
+	if (first_score > second_score) {
+		Log("AI determined going first was beneficial in this position");
+
+		return AI_MOVE_FIRST;
+	}
+	else if (second_score > first_score) {
+		Log("AI determined going second was beneficial in this position");
+
+		return AI_MOVE_SECOND;
+	}
+	else {
+		Log("[ERROR] AI determined no difference, defaulting to first");
+
+		return AI_MOVE_FIRST;
+	}
+}
+
+bool PlayerTurn(ChocolateBar& bar) {
+	std::cout << "Human's turn!" << std::endl;
+	bar.Print();
+	Move player_move = GetPlayerMove(bar);
+	std::cout << ReprMove(player_move) << std::endl;
+	bar.MakeMove(player_move);
+
+	if (bar.CheckLost()) {
+		std::cout << "AI lost!" << std::endl;
+
+		return true;
+	}
+
+	return false;
+}
+
+bool AITurn(ChocolateBar& bar, TranspositionTable& table) {
+	std::cout << "AI's turn!" << std::endl;
+	bar.Print();
+	Move ai_move = GetAIMove(bar, table);
+	std::cout << ReprMove(ai_move) << std::endl;
+	bar.MakeMove(ai_move);
+
+	if (bar.CheckLost()) {
+		std::cout << "Player lost!" << std::endl;
+
+		return true;
+	}
+
+	return false;
+}
+
+void PlayAgainstAI() {
+	ChocolateBar bar(5, 3, 2, 1);
+	// 100k possible entries
 	TranspositionTable table(100000);
 
+	bool AIMovesFirst = GetAIMoveOrder(bar, table) == AI_MOVE_FIRST;
+
+	Log("\n<--- GAME STARTING --->");
+
 	while (!bar.CheckLost()) {
-		std::cout << "Human's turn!" << std::endl;
-		bar.Print();
-		Move player_move = GetPlayerMove(bar);
-		std::cout << ReprMove(player_move) << std::endl;
-		bar.MakeMove(player_move);
-
-		if (bar.CheckLost()) {
-			std::cout << "AI lost!" << std::endl;
-
-			break;
+		// TODO: very bad
+		if (AIMovesFirst) {
+			if (AITurn(bar, table)) { break; }
+			if (PlayerTurn(bar)) { break; }
 		}
+		else {
+			if (PlayerTurn(bar)) { break; }
+			if (AITurn(bar, table)) { break; }
+		}
+	}
+}
 
-		std::cout << "AI's turn!" << std::endl;
-		bar.Print();
-		Move ai_move = GetAIMove(bar, table);
-		std::cout << ReprMove(ai_move) << std::endl;
-		bar.MakeMove(ai_move);
+void AITestBars() {
+	const int max_size = 11;
 
-		if (bar.CheckLost()) {
-			std::cout << "Player lost!" << std::endl;
+	int amount_first = 0;
+	int amount_second = 0;
 
-			break;
+	float total_bars_gen = (max_size * (max_size + 1) / 2) * (max_size * (max_size + 1) / 2);
+	std::cout << "Total bars: " << total_bars_gen << std::endl;
+	int bars_counter = 0;
+	float last_percent = 0;
+
+	for (int rows = 1; rows <= max_size; rows++) {
+		for (int columns = 1; columns <= max_size; columns++) {
+			for (int prows = 0; prows < rows; prows++) {
+				for (int pcolumns = 0; pcolumns < columns; pcolumns++) {
+					ChocolateBar bar(columns, rows, pcolumns, prows);
+
+					TranspositionTable table(100000);
+					MOVE_ORDER ai_move_order = GetAIMoveOrder(bar, table);
+
+					switch (ai_move_order) {
+					case AI_MOVE_FIRST: ++amount_first; break;
+					case AI_MOVE_SECOND: ++amount_second; break;
+					default: std::cout << "INVALID MOVE ORDER" << std::endl; break;
+					}
+					
+					++bars_counter;
+
+					float current_percent = bars_counter / total_bars_gen;
+
+					if (current_percent - last_percent > 0.01f) {
+						last_percent = current_percent;
+
+						PRINTING_ALL = true;
+
+						Log("{}% Done", current_percent * 100.0f);
+
+						PRINTING_ALL = false;
+					}
+				}
+			}
 		}
 	}
 
-	return NULL;
+	PRINTING_ALL = true;
+
+	Log("Went first {} times, went second {} times", amount_first, amount_second);
+	
+	float sum_times = amount_first + amount_second;
+	float first_percent = (float)amount_first / sum_times;
+	float second_percent = (float)amount_second / sum_times;
+
+	Log("Went first {}%, second {}%", first_percent * 100.0f, second_percent * 100.0f);
+	Log("Evaluated {} bars total", bars_counter);
+}
+
+void GenerateWinMap(int columns, int rows) {
+	TranspositionTable table(100000);
+
+	PRINTING_ALL = false;
+
+	for (int prow = 0; prow < rows; prow++) {
+		for (int pcolumn = 0; pcolumn < columns; pcolumn++) {
+			MOVE_ORDER order = GetAIMoveOrder(ChocolateBar(columns, rows, pcolumn, prow), table);
+
+			if (order == AI_MOVE_FIRST) {
+				std::cout << "1";
+			}
+			else {
+				std::cout << "2";
+			}
+
+			table.Reset();
+		}
+
+		std::cout << std::endl;
+	}
+}
+
+int main(void) {
+	std::cout << "Rows: ";
+	int rows;
+	std::cin >> rows;
+	std::cout << std::endl << "Columns: ";
+	int columns;
+	std::cin >> columns;
+	std::cout << std::endl;
+
+	GenerateWinMap(columns, rows);
+
+	//PlayAgainstAI();
+	//AITestBars();
+	// Amount of columns then amount of rows
 }
