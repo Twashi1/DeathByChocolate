@@ -591,10 +591,10 @@ void GenerateWinMap(int columns, int rows) {
 			MOVE_ORDER order = GetAIMoveOrder(ChocolateBar(columns, rows, pcolumn, prow), table);
 
 			if (order == AI_MOVE_FIRST) {
-				std::cout << "1";
+				std::cout << "#";
 			}
 			else {
-				std::cout << "2";
+				std::cout << "-";
 			}
 
 			table.Reset();
@@ -604,7 +604,10 @@ void GenerateWinMap(int columns, int rows) {
 	}
 }
 
+#define __WINMAP
+
 int main(void) {
+#ifdef __WINMAP
 	std::cout << "Rows: ";
 	int rows;
 	std::cin >> rows;
@@ -614,8 +617,8 @@ int main(void) {
 	std::cout << std::endl;
 
 	GenerateWinMap(columns, rows);
-
-	//PlayAgainstAI();
-	//AITestBars();
-	// Amount of columns then amount of rows
+#else
+	PlayAgainstAI();
+	AITestBars();
+#endif
 }
